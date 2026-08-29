@@ -4,20 +4,18 @@ import {
   getDoc,
   getDocs,
   setDoc,
-  updateDoc,
-  onSnapshot,
   addDoc,
+  onSnapshot,
   query,
   where,
   orderBy,
-  serverTimestamp as fsServerTimestamp,
+  deleteDoc,
   type DocumentReference,
   type CollectionReference,
-  type Firestore,
   type Unsubscribe,
 } from "firebase/firestore";
 import { getDb } from "./firebase";
-import { paths, assignmentKey } from "./paths";
+import { paths, assignmentKey, notificationReadKey } from "./paths";
 import { log, logError } from "./log";
 import type {
   Driver,
@@ -26,7 +24,6 @@ import type {
   DeliveryEvent,
   DeliveryEventType,
   DeliveryStatus,
-  DriverLocation,
   Earning,
   WalletTransaction,
   DriverNotification,
@@ -34,6 +31,8 @@ import type {
   ProofOfDelivery,
   Restaurant,
   SupportMessage,
+  OrderTimelineEntry,
+  NotificationRead,
 } from "@/types/forkfleet";
 
 export const nowIso = () => new Date().toISOString();
@@ -42,6 +41,19 @@ export function toArray<T>(val: unknown): T[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.filter(Boolean) as T[];
   return Object.values(val as Record<string, T>);
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v === undefined) {
+      out[k] = null;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out as T;
 }
 
 function isDocPath(path: string): boolean {
@@ -77,6 +89,11 @@ function snapToArray<T>(snap: {
     if (item) out.push(item);
   }
   return out;
+}
+
+async function mergePatch(path: string, patch: Record<string, unknown>) {
+  const clean = stripUndefined(patch);
+  await setDoc(getDocRef(path), clean, { merge: true });
 }
 
 /* ------------------------------------------------------------------ reads */
@@ -150,23 +167,35 @@ export async function findDriverForUser(uid: string, email: string | null): Prom
 }
 
 export async function linkDriverToAuthUser(driverId: string, uid: string) {
-  await updateDoc(getDocRef(paths.driver(driverId)), {
+  await mergePatch(paths.driver(driverId), {
     user_id: uid,
     updated_at: nowIso(),
   });
 }
 
 export async function updateDriverProfile(driverId: string, patch: Partial<Driver>) {
-  await updateDoc(getDocRef(paths.driver(driverId)), { ...patch, updated_at: nowIso() });
+  await mergePatch(paths.driver(driverId), { ...patch, updated_at: nowIso() });
 }
 
 export async function setDriverOnline(driverId: string, online: boolean) {
-  const patch: Partial<Driver> = {
+  const snap = await getDoc(getDocRef(paths.driver(driverId)));
+  const driver = snapToData<Driver>(snap);
+  if (!driver) throw new Error("Driver profile not found.");
+
+  if (online) {
+    if (!driver.is_verified || !driver.is_active) {
+      throw new Error(
+        "Cannot go online: driver account must be verified and active. Please complete verification or contact operations.",
+      );
+    }
+  }
+
+  const patch: Record<string, unknown> = {
     status: online ? "online" : "offline",
     updated_at: nowIso(),
   };
   patch[online ? "last_online_at" : "last_offline_at"] = nowIso();
-  await updateDoc(getDocRef(paths.driver(driverId)), patch);
+  await mergePatch(paths.driver(driverId), patch);
   log("STATUS", `driver ${driverId} -> ${online ? "online" : "offline"}`);
 }
 
@@ -278,13 +307,55 @@ export function subscribeOrder(orderId: string, cb: (order: Order | null) => voi
 }
 
 export function subscribeOrderEvents(orderId: string, cb: (events: DeliveryEvent[]) => void) {
-  const col = getColRef(paths.orderEvents(orderId));
-  const q = query(col, orderBy("timestamp", "asc"));
-  return onSnapshot(
-    q,
-    (snap) => cb(snapToArray<DeliveryEvent>(snap)),
-    (err) => logError("FIREBASE", "subscribeOrderEvents failed", err),
-  );
+  return subscribeDoc<Order>(paths.order(orderId), (order) => {
+    const rawTimeline = (order?.timeline as OrderTimelineEntry[]) ?? [];
+    const events: DeliveryEvent[] = rawTimeline.map((entry, idx) => {
+      const statusToEvent: Record<string, DeliveryEventType> = {
+        assigned: "assignment_offered",
+        picked_up: "order_picked_up",
+        on_the_way: "on_the_way",
+        delivered: "delivered",
+        arrived_at_restaurant: "arrived_at_restaurant",
+        arrived_at_customer: "arrived_at_customer",
+        payment_collected: "proof_uploaded",
+      };
+      const eventType = statusToEvent[entry.status] ?? ("order_received" as DeliveryEventType);
+      return {
+        event_id: `${orderId}_tl_${idx}`,
+        order_id: orderId,
+        driver_id: entry.driver_id ?? "",
+        event_type: eventType,
+        status: entry.status as DeliveryStatus,
+        timestamp: entry.at,
+        latitude: entry.latitude ?? null,
+        longitude: entry.longitude ?? null,
+        note: entry.note ?? null,
+        metadata: null,
+      } as DeliveryEvent;
+    });
+    cb(events);
+  });
+}
+
+async function appendTimeline(
+  orderId: string,
+  entry: Omit<OrderTimelineEntry, "at"> & { at?: string },
+  driverId?: string,
+): Promise<void> {
+  const snap = await getDoc(getDocRef(paths.order(orderId)));
+  const order = snapToData<Order>(snap);
+  const existing: OrderTimelineEntry[] = (order?.timeline as OrderTimelineEntry[]) ?? [];
+  const newEntry: OrderTimelineEntry = {
+    status: entry.status,
+    at: entry.at ?? nowIso(),
+    ...(entry.note ? { note: entry.note } : {}),
+    ...(driverId ? { driver_id: driverId } : entry.driver_id ? { driver_id: entry.driver_id } : {}),
+    ...(entry.latitude !== undefined ? { latitude: entry.latitude } : {}),
+    ...(entry.longitude !== undefined ? { longitude: entry.longitude } : {}),
+  };
+  await mergePatch(paths.order(orderId), {
+    timeline: [...existing, newEntry],
+  });
 }
 
 /* ------------------------------------------------------- delivery events */
@@ -298,44 +369,13 @@ export interface MutationContext {
   clientRequestId: string;
 }
 
-export function idempotencyKey(
+function idempotencyKey(
   orderId: string,
   driverId: string,
-  eventType: DeliveryEventType,
+  eventType: string,
   clientRequestId: string,
 ) {
   return `${eventType}__${driverId}__${clientRequestId}`.replace(/[.#$/[\]]/g, "-");
-}
-
-async function writeEvent(
-  eventType: DeliveryEventType,
-  status: DeliveryStatus,
-  ctx: MutationContext,
-) {
-  const orderId = ctx.order.id;
-  const eventId = idempotencyKey(orderId, ctx.driverId, eventType, ctx.clientRequestId);
-  const existingSnap = await getDoc(getDocRef(paths.orderEvent(orderId, eventId)));
-  if (existingSnap.exists()) {
-    log("ORDER", `duplicate ${eventType} suppressed for ${orderId}`);
-    return false;
-  }
-  const event: DeliveryEvent = {
-    event_id: eventId,
-    order_id: orderId,
-    driver_id: ctx.driverId,
-    restaurant_id: orderRestaurantId(ctx.order) ?? undefined,
-    branch_id: orderBranchId(ctx.order) ?? undefined,
-    event_type: eventType,
-    status,
-    timestamp: nowIso(),
-    latitude: ctx.location?.latitude ?? null,
-    longitude: ctx.location?.longitude ?? null,
-    note: ctx.note ?? null,
-    metadata: ctx.metadata ?? null,
-  };
-  await setDoc(getDocRef(paths.orderEvent(orderId, eventId)), event);
-  log("STATUS", `${ctx.order.order_number ?? orderId} -> ${status}`);
-  return true;
 }
 
 async function guard(ctx: MutationContext) {
@@ -353,52 +393,40 @@ function assertOwnership(ctx: MutationContext) {
   }
 }
 
-export async function acceptDelivery(ctx: MutationContext, driver: Driver) {
-  await guard(ctx);
-  const freshSnap = await getDoc(getDocRef(paths.order(ctx.order.id)));
-  const fresh = snapToData<Order>(freshSnap);
-  if (fresh?.driver_id && fresh.driver_id !== ctx.driverId) {
-    throw new Error("This delivery has already been taken by another driver.");
+async function checkIdempotent(orderId: string, ctx: MutationContext, tag: string): Promise<boolean> {
+  const key = idempotencyKey(orderId, ctx.driverId, tag, ctx.clientRequestId);
+  const markerPath = `idem/${key}`;
+  if (!isDocPath(markerPath)) return true;
+  const snap = await getDoc(getDocRef(markerPath)).catch(() => null);
+  if (snap && snap.exists()) {
+    log("ORDER", `duplicate ${tag} suppressed for ${orderId}`);
+    return false;
   }
-  const created = await writeEvent("assignment_accepted", "accepted", ctx);
-  if (!created) return;
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
-    driver_id: ctx.driverId,
-    driver_name: driver.full_name,
-    driver_phone: driver.phone,
-    driver_rating: driver.rating ?? null,
-    driver_status: "accepted",
-    status: "assigned",
-    accepted_at: nowIso(),
-    updated_at: nowIso(),
-  });
-}
-
-export async function rejectDelivery(ctx: MutationContext, reason: string) {
-  await guard(ctx);
-  const created = await writeEvent("assignment_rejected", "rejected", { ...ctx, note: reason });
-  if (!created) return;
-  const patch: Record<string, unknown> = {
-    rejected_at: nowIso(),
-    rejection_reason: reason,
-    updated_at: nowIso(),
-  };
-  if (ctx.order.driver_id === ctx.driverId) {
-    patch["driver_id"] = null;
-    patch["driver_name"] = null;
-    patch["driver_phone"] = null;
-    patch["driver_status"] = null;
-    patch["status"] = "ready";
+  try {
+    await setDoc(getDocRef(markerPath), { t: nowIso() });
+  } catch {
+    // ignore marker failures
   }
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), patch);
+  return true;
 }
 
 export async function arriveAtRestaurant(ctx: MutationContext) {
   await guard(ctx);
   assertOwnership(ctx);
-  const created = await writeEvent("arrived_at_restaurant", "arrived_at_restaurant", ctx);
-  if (!created) return;
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
+  const ok = await checkIdempotent(ctx.order.id, ctx, "arrive_at_restaurant");
+  if (!ok) return;
+
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "arrived_at_restaurant",
+      driver_id: ctx.driverId,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
     driver_status: "arrived_at_restaurant",
     arrived_at_restaurant: nowIso(),
     updated_at: nowIso(),
@@ -408,15 +436,36 @@ export async function arriveAtRestaurant(ctx: MutationContext) {
 export async function verifyPickup(ctx: MutationContext, code: string) {
   await guard(ctx);
   assertOwnership(ctx);
-  await writeEvent("pickup_verified", "arrived_at_restaurant", { ...ctx, metadata: { code } });
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "pickup_verified",
+      driver_id: ctx.driverId,
+      note: `Pickup code: ${code}`,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
 }
 
 export async function pickUpOrder(ctx: MutationContext) {
   await guard(ctx);
   assertOwnership(ctx);
-  const created = await writeEvent("order_picked_up", "picked_up", ctx);
-  if (!created) return;
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
+  const ok = await checkIdempotent(ctx.order.id, ctx, "picked_up");
+  if (!ok) return;
+
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "picked_up",
+      driver_id: ctx.driverId,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
     driver_status: "picked_up",
     status: "picked_up",
     picked_up_at: nowIso(),
@@ -427,12 +476,23 @@ export async function pickUpOrder(ctx: MutationContext) {
 export async function startDelivery(ctx: MutationContext) {
   await guard(ctx);
   assertOwnership(ctx);
-  const created = await writeEvent("en_route", "en_route", ctx);
-  if (!created) return;
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
-    driver_status: "en_route",
-    status: "en_route",
-    en_route_at: nowIso(),
+  const ok = await checkIdempotent(ctx.order.id, ctx, "on_the_way");
+  if (!ok) return;
+
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "on_the_way",
+      driver_id: ctx.driverId,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
+    driver_status: "on_the_way",
+    status: "on_the_way",
+    on_the_way_at: nowIso(),
     updated_at: nowIso(),
   });
 }
@@ -440,9 +500,20 @@ export async function startDelivery(ctx: MutationContext) {
 export async function arriveAtCustomer(ctx: MutationContext) {
   await guard(ctx);
   assertOwnership(ctx);
-  const created = await writeEvent("arrived_at_customer", "arrived_at_customer", ctx);
-  if (!created) return;
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
+  const ok = await checkIdempotent(ctx.order.id, ctx, "arrive_at_customer");
+  if (!ok) return;
+
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "arrived_at_customer",
+      driver_id: ctx.driverId,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
     driver_status: "arrived_at_customer",
     arrived_at_customer: nowIso(),
     updated_at: nowIso(),
@@ -452,13 +523,21 @@ export async function arriveAtCustomer(ctx: MutationContext) {
 export async function completeDelivery(ctx: MutationContext, proof: ProofOfDelivery) {
   await guard(ctx);
   assertOwnership(ctx);
-  const created = await writeEvent("delivered", "delivered", {
-    ...ctx,
-    metadata: { proof_method: proof.method },
-  });
-  if (!created) return;
+  const ok = await checkIdempotent(ctx.order.id, ctx, "delivered");
+  if (!ok) return;
 
-  await updateDoc(getDocRef(paths.order(ctx.order.id)), {
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "delivered",
+      driver_id: ctx.driverId,
+      note: `Proof: ${proof.method}`,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
     proof_of_delivery: proof,
     driver_status: "delivered",
     status: "delivered",
@@ -469,7 +548,6 @@ export async function completeDelivery(ctx: MutationContext, proof: ProofOfDeliv
   });
 
   await recordEarning(ctx.driverId, ctx.order);
-  await clearLiveLocation(ctx.order.id);
 }
 
 /* --------------------------------------------------------------- earnings */
@@ -492,7 +570,8 @@ export async function recordEarning(driverId: string, order: Order) {
     status: "pending",
     created_at: nowIso(),
   };
-  await setDoc(getDocRef(paths.earning(driverId, order.id)), earning);
+  const cleanEarning = stripUndefined(earning as unknown as Record<string, unknown>) as unknown as Earning;
+  await setDoc(getDocRef(paths.earning(driverId, order.id)), cleanEarning);
 
   const txId = `tx_${order.id}`;
   const tx: WalletTransaction = {
@@ -505,7 +584,8 @@ export async function recordEarning(driverId: string, order: Order) {
     description: `Delivery ${order.order_number ?? order.id}`,
     created_at: nowIso(),
   };
-  await setDoc(getDocRef(paths.walletTx(driverId, txId)), tx);
+  const cleanTx = stripUndefined(tx as unknown as Record<string, unknown>) as unknown as WalletTransaction;
+  await setDoc(getDocRef(paths.walletTx(driverId, txId)), cleanTx);
 }
 
 export function subscribeEarnings(driverId: string, cb: (e: Earning[]) => void) {
@@ -532,32 +612,16 @@ export function subscribeWallet(driverId: string, cb: (t: WalletTransaction[]) =
 
 /* --------------------------------------------------------------- location */
 
-export async function publishLiveLocation(orderId: string, driverId: string, loc: DriverLocation) {
-  const payload: DriverLocation = {
-    latitude: loc.latitude,
-    longitude: loc.longitude,
-    heading: loc.heading ?? null,
-    speed: loc.speed ?? null,
-    updated_at: nowIso(),
-    driver_id: driverId,
-    order_id: orderId,
-  };
-  await setDoc(getDocRef(paths.driverLive(orderId)), payload);
-}
-
-export async function clearLiveLocation(orderId: string) {
-  const docRef = getDocRef(paths.driverLive(orderId));
-  const snap = await getDoc(docRef);
-  if (snap.exists()) {
-    await setDoc(docRef, {
-      ...(snap.data() as object),
-      updated_at: nowIso(),
-    });
-  }
-}
+const lastDriverPositionWrite: Record<string, number> = {};
 
 export async function publishDriverPosition(driverId: string, lat: number, lng: number) {
-  await updateDoc(getDocRef(paths.driver(driverId)), {
+  const now = Date.now();
+  const last = lastDriverPositionWrite[driverId] ?? 0;
+  if (now - last < 12_000) {
+    return;
+  }
+  lastDriverPositionWrite[driverId] = now;
+  await mergePatch(paths.driver(driverId), {
     current_latitude: lat,
     current_longitude: lng,
     updated_at: nowIso(),
@@ -567,30 +631,99 @@ export async function publishDriverPosition(driverId: string, lat: number, lng: 
 /* ---------------------------------------------------------- notifications */
 
 export function subscribeNotifications(driverId: string, cb: (n: DriverNotification[]) => void) {
-  const q = query(
-    getColRef(paths.notifications),
-    where("driver_id", "==", driverId),
-    orderBy("created_at", "desc"),
-  );
   return onSnapshot(
-    q,
-    (snap) => cb(snapToArray<DriverNotification>(snap)),
+    getColRef(paths.notificationAlerts),
+    async (snap) => {
+      const alerts = snapToArray<Record<string, unknown>>(snap);
+      const readSnap = await getDocs(
+        query(getColRef(paths.notificationReads), where("user_id", "==", driverId)),
+      ).catch(() => null);
+      const readIds = new Set<string>();
+      if (readSnap) {
+        for (const d of readSnap.docs) {
+          const data = d.data() as NotificationRead;
+          if (data?.alert_id) readIds.add(data.alert_id);
+        }
+      }
+      const result: DriverNotification[] = [];
+      for (const a of alerts) {
+        const alertDriverId = (a as { driver_id?: string | null }).driver_id;
+        const global = !alertDriverId;
+        const matchesDriver = alertDriverId === driverId;
+        if (!global && !matchesDriver) continue;
+
+        const alertId = (a as { id?: string }).id ?? "";
+        result.push({
+          id: alertId,
+          alert_id: alertId,
+          driver_id: alertDriverId ?? driverId,
+          user_id: driverId,
+          title: (a as { title?: string }).title ?? "",
+          body: (a as { body?: string }).body ?? (a as { message?: string }).message ?? "",
+          message: (a as { message?: string }).message ?? (a as { body?: string }).body ?? "",
+          type: (a as { type?: string }).type ?? "info",
+          order_id: (a as { order_id?: string | null }).order_id ?? null,
+          read: readIds.has(alertId),
+          created_at: (a as { created_at?: string }).created_at ?? nowIso(),
+          severity: (a as { severity?: "info" | "warning" | "critical" }).severity ?? "info",
+        } as DriverNotification);
+      }
+      result.sort(
+        (x, y) =>
+          new Date(y.created_at).getTime() - new Date(x.created_at).getTime(),
+      );
+      cb(result);
+    },
     (err) => logError("FIREBASE", "subscribeNotifications failed", err),
   );
 }
 
-export async function markNotificationRead(driverId: string, id: string) {
-  const docRef = doc(getDb(), paths.notifications, id);
-  await updateDoc(docRef, { read: true });
+export async function markNotificationRead(driverId: string, alertId: string) {
+  const id = notificationReadKey(alertId, driverId);
+  const read: NotificationRead = {
+    id,
+    alert_id: alertId,
+    user_id: driverId,
+    read_at: nowIso(),
+  };
+  await setDoc(getDocRef(paths.notificationRead(id)), read);
 }
 
-export async function markAllNotificationsRead(driverId: string, ids: string[]) {
-  const db = getDb();
-  const batch = ids.map(async (id) => {
-    const docRef = doc(db, paths.notifications, id);
-    return updateDoc(docRef, { read: true });
+export async function markAllNotificationsRead(driverId: string, alertIds: string[]) {
+  await Promise.all(alertIds.map((id) => markNotificationRead(driverId, id)));
+}
+
+/* ----------------------------------------------------------------- payment */
+
+export async function confirmCashCollection(orderId: string, driverId: string): Promise<void> {
+  const snap = await getDoc(getDocRef(paths.order(orderId)));
+  const order = snapToData<Order>(snap);
+  if (!order) return;
+
+  const payment = order.payment ?? {};
+  if (payment.method !== "cash") return;
+  if (payment.status === "paid") return;
+
+  await appendTimeline(
+    orderId,
+    {
+      status: "payment_collected",
+      driver_id: driverId,
+      note: "Cash on delivery collected",
+    },
+    driverId,
+  );
+  await mergePatch(paths.order(orderId), {
+    payment: {
+      status: "paid",
+      collected_by: driverId,
+      collected_at: nowIso(),
+      method: "cash",
+      amount: payment.amount ?? order.total ?? null,
+      transaction_id: payment.transaction_id ?? null,
+    },
+    updated_at: nowIso(),
   });
-  await Promise.all(batch);
 }
 
 /* --------------------------------------------------------------- support */
@@ -627,7 +760,8 @@ export async function createSupportTicket(
       m0: { id: "m0", sender: "driver", body: input.message, created_at: nowIso() },
     },
   };
-  await setDoc(doc(col, id), ticket);
+  const clean = stripUndefined(ticket as unknown as Record<string, unknown>) as unknown as SupportTicket;
+  await setDoc(doc(col, id), clean);
   return id;
 }
 
@@ -643,7 +777,7 @@ export async function addSupportMessage(ticketId: string, body: string) {
     body,
     created_at: nowIso(),
   };
-  await updateDoc(getDocRef(paths.supportTicket(ticketId)), {
+  await mergePatch(paths.supportTicket(ticketId), {
     [`messages.${msgId}`]: msg,
     updated_at: nowIso(),
     status: "open",
@@ -720,8 +854,8 @@ export async function registerDriverProfile(
     email: input.email.trim().toLowerCase(),
     phone: input.phone.trim(),
     city: input.city?.trim() || "",
-    status: "offline",
-    is_active: true,
+    status: "pending",
+    is_active: false,
     is_deleted: false,
     is_verified: false,
     rating: 0,
@@ -739,7 +873,7 @@ export async function registerDriverProfile(
     last_offline_at: null,
   };
 
-  const record = {
+  const record = stripUndefined({
     ...driver,
     name: driver.full_name,
     driver_id: uid,
@@ -749,7 +883,7 @@ export async function registerDriverProfile(
     approval_status: "pending",
     onboarding_source: "driver_app",
     registered_at: ts,
-  };
+  } as Record<string, unknown>) as unknown as Record<string, unknown>;
 
   await setDoc(getDocRef(paths.driver(uid)), record);
   log("AUTH", `driver profile created for ${uid}`);

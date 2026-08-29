@@ -7,7 +7,7 @@ const TONE: Record<string, string> = {
   assigned: "bg-info/15 text-info",
   arrived_at_restaurant: "bg-warning/20 text-warning",
   picked_up: "bg-warning/20 text-warning",
-  en_route: "bg-primary/15 text-primary",
+  on_the_way: "bg-primary/15 text-primary",
   arrived_at_customer: "bg-primary/15 text-primary",
   delivered: "bg-success/15 text-success",
   cancelled: "bg-destructive/15 text-destructive",

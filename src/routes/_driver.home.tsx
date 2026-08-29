@@ -35,6 +35,12 @@ function HomePage() {
 
   const online = driver?.status === "online";
   const duty = active.length > 0 ? "BUSY" : online ? "ONLINE" : "OFFLINE";
+  const disabledStatuses = ["suspended", "rejected", "pending"] as const;
+  const canToggleOnline =
+    !!driver &&
+    !disabledStatuses.includes(driver.status as (typeof disabledStatuses)[number]) &&
+    driver.is_verified &&
+    driver.is_active;
 
   const restaurantsWorked = useMemo(
     () => new Set(activeAssignments.map((a) => a.restaurant_id)).size,
@@ -43,6 +49,20 @@ function HomePage() {
 
   const toggle = async (value: boolean) => {
     if (!driver) return;
+    if (value && !driver.is_verified) {
+      toast.error("Cannot go online: driver account is not verified. Please complete verification.");
+      return;
+    }
+    if (value && !driver.is_active) {
+      toast.error("Cannot go online: driver account is not active. Contact operations.");
+      return;
+    }
+    if (value && disabledStatuses.includes(driver.status as (typeof disabledStatuses)[number])) {
+      toast.error(
+        `Cannot go online: account status is "${driver.status}". Contact operations to resolve.`,
+      );
+      return;
+    }
     setToggling(true);
     try {
       await setDriverOnline(driver.id, value);
@@ -82,7 +102,7 @@ function HomePage() {
             </span>
             <div className="mt-2 flex items-center justify-end gap-2">
               <span className="text-xs font-semibold">{online ? "Online" : "Offline"}</span>
-              <Switch checked={online} disabled={toggling} onCheckedChange={toggle} />
+              <Switch checked={online} disabled={toggling || !canToggleOnline} onCheckedChange={toggle} />
             </div>
           </div>
         </div>

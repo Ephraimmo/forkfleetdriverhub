@@ -8,6 +8,7 @@ import {
   subscribeOrderChat,
   sendOrderMessage,
   loadRestaurant,
+  confirmCashCollection,
 } from "@/lib/repo";
 import { buildOrderViewModel, nextAction } from "@/lib/viewModel";
 import { useDeliveryActions } from "@/hooks/useDeliveryActions";
@@ -89,7 +90,7 @@ function ActiveDelivery() {
     return <p className="surface-card p-6 text-center">This delivery is assigned to another driver.</p>;
 
   const target =
-    vm.driverStatus === "picked_up" || vm.driverStatus === "en_route" || vm.driverStatus === "arrived_at_customer"
+    vm.driverStatus === "picked_up" || vm.driverStatus === "on_the_way" || vm.driverStatus === "arrived_at_customer"
       ? vm.deliveryAddress
       : { latitude: vm.branch.latitude, longitude: vm.branch.longitude };
   const distance =
@@ -257,6 +258,23 @@ function ActiveDelivery() {
         <Button size="lg" className="h-16 w-full text-lg font-bold" disabled={busy} onClick={handlePrimary}>
           {busy && <Loader2 className="mr-2 size-5 animate-spin" />}
           {step.label.toUpperCase()}
+        </Button>
+      )}
+
+      {order?.payment?.method === "cash" && order?.payment?.status !== "paid" && driver && (
+        <Button
+          size="lg"
+          variant="secondary"
+          className="h-14 w-full text-base font-bold"
+          disabled={busy}
+          onClick={() =>
+            run(async () => {
+              await confirmCashCollection(orderId, driver.id);
+            }, "Cash payment marked as collected")
+          }
+        >
+          {busy && <Loader2 className="mr-2 size-5 animate-spin" />}
+          Confirm cash collected
         </Button>
       )}
 

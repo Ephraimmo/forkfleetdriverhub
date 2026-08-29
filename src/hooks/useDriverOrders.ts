@@ -28,9 +28,11 @@ export function useDriverOrders() {
 
   const models = useMemo(() => {
     if (!driver) return [] as DriverOrderViewModel[];
-    return orders.map((o) =>
-      buildOrderViewModel(o, { restaurant: restaurants[orderRestaurantId(o) ?? ""] ?? null }),
-    );
+    return orders
+      .filter((o) => o.order_type !== "pickup")
+      .map((o) =>
+        buildOrderViewModel(o, { restaurant: restaurants[orderRestaurantId(o) ?? ""] ?? null }),
+      );
   }, [orders, restaurants, driver]);
 
   const mine = useMemo(
@@ -39,7 +41,7 @@ export function useDriverOrders() {
   );
 
   const active = useMemo(
-    () => mine.filter((m) => ACTIVE_STATUSES.includes(m.driverStatus) && m.orderStatus !== "cancelled"),
+    () => mine.filter((m) => ACTIVE_STATUSES.includes(m.driverStatus) && m.orderStatus !== "cancelled" && m.orderStatus !== "rejected" && m.orderStatus !== "refunded"),
     [mine],
   );
 

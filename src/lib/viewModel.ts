@@ -4,6 +4,8 @@ import type {
   DriverOrderViewModel,
   Order,
   OrderItem,
+  OrderPayment,
+  OrderTimelineEntry,
   Restaurant,
 } from "@/types/forkfleet";
 import { orderBranchId, orderRestaurantId, toArray } from "./repo";
@@ -26,6 +28,8 @@ export function buildOrderViewModel(
     (branchRecord?.["address"] as string) || (restaurant?.address as string) || "";
 
   const items = toArray<OrderItem>(order.items);
+  const orderTimeline = (order.timeline as OrderTimelineEntry[]) ?? [];
+  const payment: OrderPayment | null = order.payment ?? null;
 
   return {
     id: order.id,
@@ -61,11 +65,13 @@ export function buildOrderViewModel(
     discount: Number(order.discount ?? 0),
     tip: Number(order.tip ?? 0),
     total: Number(order.total ?? 0),
-    paymentStatus: order.payment_status ?? "unknown",
-    paymentMethod: order.payment_method ?? "unknown",
+    paymentStatus: order.payment?.status ?? order.payment_status ?? "unknown",
+    paymentMethod: order.payment?.method ?? order.payment_method ?? "unknown",
+    payment,
     orderStatus: order.status,
-    driverStatus: (order.driver_status as DeliveryStatus) ?? inferDriverStatus(order),
+    driverStatus: (order["driver_status"] as DeliveryStatus) ?? inferDriverStatus(order),
     timeline: opts.events ?? [],
+    orderTimeline,
     eta: order.eta_minutes ?? null,
     distanceKm: order.delivery_distance_km ?? null,
     driverId: order.driver_id ?? null,
@@ -80,12 +86,12 @@ function inferDriverStatus(order: Order): DeliveryStatus {
   switch (order.status) {
     case "delivered":
       return "delivered";
-    case "en_route":
-      return "en_route";
+    case "on_the_way":
+      return "on_the_way";
     case "picked_up":
       return "picked_up";
     case "assigned":
-      return "accepted";
+      return "assigned";
     case "cancelled":
       return "cancelled";
     default:
@@ -100,13 +106,13 @@ export function nextAction(status: DeliveryStatus):
   switch (status) {
     case "accepted":
     case "assigned":
-      return { key: "arrive_restaurant", label: "Arrive at restaurant" };
+      return { key: "pickup", label: "Pick up order" };
     case "arrived_at_restaurant":
       return { key: "pickup", label: "Pick up order" };
     case "picked_up":
       return { key: "start", label: "Start delivery" };
-    case "en_route":
-      return { key: "arrive_customer", label: "Arrived at customer" };
+    case "on_the_way":
+      return { key: "complete", label: "Complete delivery" };
     case "arrived_at_customer":
       return { key: "complete", label: "Complete delivery" };
     default:
@@ -119,6 +125,6 @@ export const ACTIVE_STATUSES: DeliveryStatus[] = [
   "assigned",
   "arrived_at_restaurant",
   "picked_up",
-  "en_route",
+  "on_the_way",
   "arrived_at_customer",
 ];

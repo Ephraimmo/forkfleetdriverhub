@@ -9,7 +9,7 @@ import {
   type MutationName,
   type QueuedMutation,
 } from "@/lib/offlineQueue";
-import type { Driver, Order, ProofOfDelivery } from "@/types/forkfleet";
+import type { Order, ProofOfDelivery } from "@/types/forkfleet";
 import { logError } from "@/lib/log";
 
 export function useDeliveryActions() {
@@ -21,7 +21,7 @@ export function useDeliveryActions() {
     async (
       name: MutationName,
       order: Order,
-      extra?: { reason?: string; code?: string; proof?: ProofOfDelivery },
+      extra?: { code?: string; proof?: ProofOfDelivery },
     ) => {
       if (!driver) throw new Error("No driver session.");
       const clientRequestId = newRequestId();
@@ -30,11 +30,11 @@ export function useDeliveryActions() {
         name,
         ctx: {
           driverId: driver.id,
-          order,
+          order: order as QueuedMutation["ctx"]["order"],
           location: position ? { latitude: position.latitude, longitude: position.longitude } : null,
           clientRequestId,
         },
-        extra: { driver: driver as Driver, ...extra },
+        ...(extra ? { extra } : {}),
         queued_at: new Date().toISOString(),
       };
 

@@ -1,7 +1,5 @@
-import type { Driver, Order, ProofOfDelivery } from "@/types/forkfleet";
+import type { ProofOfDelivery } from "@/types/forkfleet";
 import {
-  acceptDelivery,
-  rejectDelivery,
   arriveAtRestaurant,
   verifyPickup,
   pickUpOrder,
@@ -13,8 +11,6 @@ import {
 import { log, logError } from "./log";
 
 export type MutationName =
-  | "accept"
-  | "reject"
   | "arrive_restaurant"
   | "verify_pickup"
   | "pickup"
@@ -27,14 +23,12 @@ export interface QueuedMutation {
   name: MutationName;
   ctx: {
     driverId: string;
-    order: Order;
+    order: { id: string; [k: string]: unknown };
     location?: { latitude: number; longitude: number } | null;
     note?: string;
     clientRequestId: string;
   };
   extra?: {
-    driver?: Driver;
-    reason?: string;
     code?: string;
     proof?: ProofOfDelivery;
   };
@@ -80,16 +74,12 @@ export function enqueue(item: QueuedMutation) {
 export async function runMutation(item: QueuedMutation): Promise<void> {
   const ctx: MutationContext = {
     driverId: item.ctx.driverId,
-    order: item.ctx.order,
+    order: item.ctx.order as unknown as MutationContext["order"],
     location: item.ctx.location ?? null,
     ...(item.ctx.note ? { note: item.ctx.note } : {}),
     clientRequestId: item.ctx.clientRequestId,
   };
   switch (item.name) {
-    case "accept":
-      return acceptDelivery(ctx, item.extra!.driver!);
-    case "reject":
-      return rejectDelivery(ctx, item.extra?.reason ?? "Unspecified");
     case "arrive_restaurant":
       return arriveAtRestaurant(ctx);
     case "verify_pickup":

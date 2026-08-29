@@ -1,36 +1,47 @@
 /**
  * Shared ForkFleet ecosystem types.
- * Field names mirror the EXISTING Firebase Realtime Database contract used by
- * the Customer App and Management Console. Do not rename fields.
+ * Field names mirror the EXISTING Firestore contract used by the
+ * Customer App and Super Admin Console. Do not rename fields.
  */
 
-export type DriverStatus = "online" | "offline" | "busy";
+export type DriverStatus =
+  | "pending"
+  | "offline"
+  | "online"
+  | "busy"
+  | "suspended"
+  | "rejected"
+  | string;
 
 export interface Driver {
   id: string;
   user_id?: string | null;
   full_name: string;
+  username?: string | null;
   email: string;
   phone: string;
-  city?: string;
-  status: DriverStatus | string;
+  city?: string | null;
+  status: DriverStatus;
   is_active: boolean;
   is_deleted?: boolean;
   is_verified: boolean;
   rating?: number;
   total_deliveries?: number;
   wallet_balance?: number;
-  vehicle_type?: string;
-  vehicle_plate?: string;
+  vehicle_type?: string | null;
+  vehicle_plate?: string | null;
   license_number?: string | null;
+  id_number?: string | null;
+  bank_name?: string | null;
+  bank_account_number?: string | null;
+  emergency_contact_name?: string | null;
+  emergency_contact_phone?: string | null;
+  preferred_language?: string | null;
+  verification_submitted_at?: string | null;
+  rejection_reason?: string | null;
   current_latitude?: number | null;
   current_longitude?: number | null;
   photo_url?: string | null;
-  emergency_contact_name?: string | null;
-  emergency_contact_phone?: string | null;
-  bank_name?: string | null;
-  bank_account_number?: string | null;
-  preferred_language?: string | null;
   created_at?: string;
   updated_at?: string;
   last_online_at?: string | null;
@@ -96,17 +107,37 @@ export type OrderStatus =
   | "ready"
   | "assigned"
   | "picked_up"
-  | "en_route"
+  | "on_the_way"
   | "delivered"
+  | "rejected"
   | "cancelled"
-  | "failed"
+  | "refunded"
   | string;
+
+export interface OrderPayment {
+  status?: "pending" | "paid" | "refunded" | string;
+  method?: string;
+  amount?: number;
+  collected_by?: string;
+  collected_at?: string;
+  transaction_id?: string;
+  [k: string]: unknown;
+}
+
+export interface OrderTimelineEntry {
+  status: string;
+  at: string;
+  note?: string;
+  driver_id?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}
 
 export interface Order {
   id: string;
   order_number?: string;
   status: OrderStatus;
-  order_type?: string;
+  order_type?: "delivery" | "pickup" | string;
   restaurant_id?: string;
   restaurantId?: string;
   branch_id?: string;
@@ -129,19 +160,27 @@ export interface Order {
   total?: number;
   payment_method?: string;
   payment_status?: string;
+  payment?: OrderPayment;
   delivery_distance_km?: number;
   placed_at?: string;
   updated_at?: string;
+  accepted_at?: string;
+  picked_up_at?: string;
+  on_the_way_at?: string;
+  delivered_at?: string;
+  delivered_latitude?: number | null;
+  delivered_longitude?: number | null;
   driver_id?: string | null;
   driver_name?: string | null;
   driver_phone?: string | null;
   driver_photo?: string | null;
   driver_rating?: number | null;
-  driver_status?: DeliveryStatus | null;
   eta_minutes?: number | null;
   eta_at?: string | null;
   pickup_code?: string | null;
   delivery_pin?: string | null;
+  proof_of_delivery?: ProofOfDelivery | null;
+  timeline?: OrderTimelineEntry[];
   [k: string]: unknown;
 }
 
@@ -153,7 +192,7 @@ export type DeliveryStatus =
   | "assigned"
   | "arrived_at_restaurant"
   | "picked_up"
-  | "en_route"
+  | "on_the_way"
   | "arrived_at_customer"
   | "delivered"
   | "cancelled"
@@ -167,7 +206,7 @@ export type DeliveryEventType =
   | "arrived_at_restaurant"
   | "pickup_verified"
   | "order_picked_up"
-  | "en_route"
+  | "on_the_way"
   | "arrived_at_customer"
   | "delivery_verified"
   | "proof_uploaded"
@@ -239,18 +278,29 @@ export interface WalletTransaction {
 
 export interface DriverNotification {
   id: string;
-  driver_id: string;
-  title: string;
-  body: string;
-  type: string;
+  alert_id?: string;
+  driver_id?: string;
+  user_id?: string;
+  title?: string;
+  body?: string;
+  message?: string;
+  type?: string;
   order_id?: string | null;
-  read: boolean;
+  read?: boolean;
   created_at: string;
+  severity?: "info" | "warning" | "critical";
+}
+
+export interface NotificationRead {
+  id: string;
+  alert_id: string;
+  user_id: string;
+  read_at: string;
 }
 
 export interface SupportMessage {
   id: string;
-  sender: "driver" | "support";
+  sender: "driver" | "support" | "admin";
   body: string;
   created_at: string;
 }
@@ -260,14 +310,16 @@ export interface SupportTicket {
   driver_id: string;
   subject: string;
   category: string;
-  status: "open" | "pending" | "resolved";
+  status: "open" | "pending" | "resolved" | "closed";
   order_id?: string | null;
   created_at: string;
   updated_at: string;
+  priority?: "low" | "medium" | "high";
+  assignee_id?: string | null;
   messages?: Record<string, SupportMessage>;
 }
 
-/** Normalized view model built by joining Firebase records. */
+/** Normalized view model built by joining Firestore records. */
 export interface DriverOrderViewModel {
   id: string;
   orderNumber: string;
@@ -286,9 +338,11 @@ export interface DriverOrderViewModel {
   total: number;
   paymentStatus: string;
   paymentMethod: string;
+  payment: OrderPayment | null;
   orderStatus: OrderStatus;
   driverStatus: DeliveryStatus;
   timeline: DeliveryEvent[];
+  orderTimeline: OrderTimelineEntry[];
   eta: number | null;
   distanceKm: number | null;
   driverId: string | null;

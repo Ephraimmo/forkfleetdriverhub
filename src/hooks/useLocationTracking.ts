@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useAppStore } from "@/stores/appStore";
-import { publishLiveLocation, publishDriverPosition } from "@/lib/repo";
+import { publishDriverPosition } from "@/lib/repo";
 import { haversineKm } from "@/lib/geo";
 import { log, logError } from "@/lib/log";
 
@@ -8,7 +8,8 @@ import { log, logError } from "@/lib/log";
  * Real device GPS tracking with adaptive publish intervals.
  * - online + idle: low frequency (60s)
  * - active delivery: 15s
- * - arrived_at_customer / en_route close to customer: 7s high precision
+ * - arrived_at_customer / on_the_way close to customer: 7s high precision
+ * Driver profile writes are throttled to at most once per 12s in repo.publishDriverPosition.
  */
 export function useLocationTracking(params: {
   enabled: boolean;
@@ -31,7 +32,7 @@ export function useLocationTracking(params: {
 
     const interval = () => {
       if (!activeOrderId) return 60_000;
-      if (activeStatus === "arrived_at_customer" || activeStatus === "en_route") return 7_000;
+      if (activeStatus === "arrived_at_customer" || activeStatus === "on_the_way") return 7_000;
       return 15_000;
     };
 
@@ -60,15 +61,6 @@ export function useLocationTracking(params: {
         publishDriverPosition(driverId, point.latitude, point.longitude).catch((e) =>
           logError("LOCATION", "driver position publish failed", e),
         );
-        if (activeOrderId) {
-          publishLiveLocation(activeOrderId, driverId, {
-            latitude: point.latitude,
-            longitude: point.longitude,
-            heading: point.heading ?? null,
-            speed: point.speed ?? null,
-            updated_at: new Date().toISOString(),
-          }).catch((e) => logError("LOCATION", "live location publish failed", e));
-        }
       },
       (err) => {
         setPositionError(err.message);
