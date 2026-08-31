@@ -5,7 +5,7 @@ import { buildOrderViewModel, ACTIVE_STATUSES } from "@/lib/viewModel";
 import type { Order, Restaurant, DriverOrderViewModel } from "@/types/forkfleet";
 import { useAppStore } from "@/stores/appStore";
 
-const OFFERABLE_ORDER_STATUSES = ["ready", "preparing", "accepted", "pending", "awaiting_driver", "ready_for_pickup"];
+const OFFERABLE_ORDER_STATUSES = ["ready", "preparing", "accepted", "pending", "awaiting_driver", "ready_for_pickup", "assigned"];
 
 export function useDriverOrders() {
   const { driver, activeAssignments } = useAuthDriver();

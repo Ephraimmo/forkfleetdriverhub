@@ -410,6 +410,42 @@ async function checkIdempotent(orderId: string, ctx: MutationContext, tag: strin
   return true;
 }
 
+export async function acceptAssignment(ctx: MutationContext) {
+  await isDriverEligible(
+    ctx.driverId,
+    orderRestaurantId(ctx.order),
+    orderBranchId(ctx.order),
+  ).then((res) => {
+    if (!res.eligible) throw new Error(res.reason ?? "Not authorized for this delivery.");
+  });
+
+  const existingId = ctx.order.driver_id;
+  if (existingId && existingId !== ctx.driverId) {
+    throw new Error("This delivery was accepted by another driver.");
+  }
+
+  const ok = await checkIdempotent(ctx.order.id, ctx, "assignment_accepted");
+  if (!ok) return;
+
+  await appendTimeline(
+    ctx.order.id,
+    {
+      status: "assigned",
+      driver_id: ctx.driverId,
+      latitude: ctx.location?.latitude ?? null,
+      longitude: ctx.location?.longitude ?? null,
+    },
+    ctx.driverId,
+  );
+  await mergePatch(paths.order(ctx.order.id), {
+    driver_id: ctx.driverId,
+    driver_status: "assigned",
+    status: "assigned",
+    assigned_at: nowIso(),
+    updated_at: nowIso(),
+  });
+}
+
 export async function arriveAtRestaurant(ctx: MutationContext) {
   await guard(ctx);
   assertOwnership(ctx);

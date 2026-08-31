@@ -4,6 +4,7 @@ import { Activity, Bell, Bike, LifeBuoy, Package, Star, TrendingUp, Wallet } fro
 import { toast } from "sonner";
 import { useAuthDriver } from "@/hooks/useAuthDriver";
 import { useDriverOrders } from "@/hooks/useDriverOrders";
+import { useDeliveryActions } from "@/hooks/useDeliveryActions";
 import { useDriverStats } from "@/hooks/useDriverStats";
 import { setDriverOnline } from "@/lib/repo";
 import { formatKm, formatMoney } from "@/lib/geo";
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { DeliveryCard } from "@/components/driver/DeliveryCard";
 import { EmptyState } from "@/components/driver/EmptyState";
 import { useAppStore } from "@/stores/appStore";
+import type { DriverOrderViewModel } from "@/types/forkfleet";
 
 export const Route = createFileRoute("/_driver/home")({
   head: () => ({
@@ -28,10 +30,12 @@ export const Route = createFileRoute("/_driver/home")({
 function HomePage() {
   const { driver, activeAssignments } = useAuthDriver();
   const { active, available, loading } = useDriverOrders();
+  const { perform } = useDeliveryActions();
   const stats = useDriverStats();
   const position = useAppStore((s) => s.position);
   const positionError = useAppStore((s) => s.positionError);
   const [toggling, setToggling] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const online = driver?.status === "online";
   const duty = active.length > 0 ? "BUSY" : online ? "ONLINE" : "OFFLINE";
@@ -71,6 +75,18 @@ function HomePage() {
       toast.error((e as Error).message);
     } finally {
       setToggling(false);
+    }
+  };
+
+  const handleAccept = async (order: DriverOrderViewModel) => {
+    setBusyId(order.id);
+    try {
+      await perform("accept", order.raw);
+      toast.success(`Accepted ${order.orderNumber} — added to Active deliveries.`);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -165,7 +181,14 @@ function HomePage() {
             description="Nothing is ready for pickup at your authorized branches right now. Offers appear here instantly."
           />
         ) : (
-          available.slice(0, 2).map((o) => <DeliveryCard key={o.id} order={o} />)
+          available.slice(0, 2).map((o) => (
+            <DeliveryCard
+              key={o.id}
+              order={o}
+              onAccept={() => handleAccept(o)}
+              busy={busyId === o.id}
+            />
+          ))
         )}
       </section>
 

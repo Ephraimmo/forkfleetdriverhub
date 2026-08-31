@@ -1,5 +1,6 @@
 import type { ProofOfDelivery } from "@/types/forkfleet";
 import {
+  acceptAssignment,
   arriveAtRestaurant,
   verifyPickup,
   pickUpOrder,
@@ -11,6 +12,7 @@ import {
 import { log, logError } from "./log";
 
 export type MutationName =
+  | "accept"
   | "arrive_restaurant"
   | "verify_pickup"
   | "pickup"
@@ -80,6 +82,8 @@ export async function runMutation(item: QueuedMutation): Promise<void> {
     clientRequestId: item.ctx.clientRequestId,
   };
   switch (item.name) {
+    case "accept":
+      return acceptAssignment(ctx);
     case "arrive_restaurant":
       return arriveAtRestaurant(ctx);
     case "verify_pickup":

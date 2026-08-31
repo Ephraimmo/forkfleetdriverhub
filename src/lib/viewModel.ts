@@ -83,7 +83,8 @@ export function buildOrderViewModel(
 }
 
 function inferDriverStatus(order: Order): DeliveryStatus {
-  switch (order.status) {
+  const rawStatus = String(order.status);
+  switch (rawStatus) {
     case "delivered":
       return "delivered";
     case "on_the_way":
@@ -91,11 +92,16 @@ function inferDriverStatus(order: Order): DeliveryStatus {
     case "picked_up":
       return "picked_up";
     case "assigned":
-      return "assigned";
+    case "accepted":
+      return order.driver_id ? "assigned" : "offered";
     case "cancelled":
       return "cancelled";
+    case "failed":
+      return "failed";
+    case "rejected":
+      return "rejected";
     default:
-      return "pending";
+      return order.driver_id ? "assigned" : "pending";
   }
 }
 
@@ -104,15 +110,16 @@ export function nextAction(status: DeliveryStatus):
   | { key: "arrive_restaurant" | "pickup" | "start" | "arrive_customer" | "complete"; label: string }
   | null {
   switch (status) {
+    case "offered":
     case "accepted":
     case "assigned":
-      return { key: "pickup", label: "Pick up order" };
+      return { key: "arrive_restaurant", label: "Arrive at restaurant" };
     case "arrived_at_restaurant":
       return { key: "pickup", label: "Pick up order" };
     case "picked_up":
       return { key: "start", label: "Start delivery" };
     case "on_the_way":
-      return { key: "complete", label: "Complete delivery" };
+      return { key: "arrive_customer", label: "Arrive at customer" };
     case "arrived_at_customer":
       return { key: "complete", label: "Complete delivery" };
     default:
@@ -121,6 +128,7 @@ export function nextAction(status: DeliveryStatus):
 }
 
 export const ACTIVE_STATUSES: DeliveryStatus[] = [
+  "offered",
   "accepted",
   "assigned",
   "arrived_at_restaurant",

@@ -1,6 +1,6 @@
 import { createFileRoute, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Phone, MessageSquare, Navigation2, Store, User, ShieldCheck, Loader2 } from "lucide-react";
+import { Phone, MessageSquare, Navigation2, Store, User, ShieldCheck, Loader2, CheckCircle2, Circle, MapPin, Package } from "lucide-react";
 import { toast } from "sonner";
 import {
   subscribeOrder,
@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatKm, formatMoney, haversineKm, etaMinutes } from "@/lib/geo";
-import type { DeliveryEvent, Order, ProofOfDelivery, Restaurant } from "@/types/forkfleet";
+import type { DeliveryEvent, DeliveryStatus, Order, ProofOfDelivery, Restaurant } from "@/types/forkfleet";
 
 export const Route = createFileRoute("/_driver/delivery/$orderId")({
   head: () => ({
@@ -100,6 +100,21 @@ function ActiveDelivery() {
 
   const step = nextAction(vm.driverStatus);
 
+  const STEPS: { key: DeliveryStatus; label: string }[] = [
+    { key: "assigned", label: "Accepted" },
+    { key: "arrived_at_restaurant", label: "At restaurant" },
+    { key: "picked_up", label: "Picked up" },
+    { key: "on_the_way", label: "On the way" },
+    { key: "arrived_at_customer", label: "At customer" },
+    { key: "delivered", label: "Delivered" },
+  ];
+
+  const progress = useMemo(() => {
+    const order = ["assigned", "arrived_at_restaurant", "picked_up", "on_the_way", "arrived_at_customer", "delivered"];
+    const idx = order.indexOf(vm.driverStatus);
+    return idx === -1 ? 0 : idx;
+  }, [vm.driverStatus]);
+
   const run = async (fn: () => Promise<void>, success: string) => {
     setBusy(true);
     try {
@@ -150,12 +165,52 @@ function ActiveDelivery() {
       : null;
 
   return (
-    <div className="space-y-4">
-      <header className="surface-card space-y-2 p-4">
+    <div className="space-y-4 pb-8">
+      <header className="surface-card space-y-4 p-4 shadow-elevate">
         <div className="flex items-center justify-between">
-          <h1 className="font-display text-2xl font-bold">{vm.orderNumber}</h1>
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+              Order
+            </p>
+            <h1 className="font-display text-2xl font-bold leading-tight">{vm.orderNumber}</h1>
+          </div>
           <StatusPill status={vm.driverStatus} />
         </div>
+
+        <div className="relative">
+          <div className="absolute left-0 right-0 top-4 h-1 rounded-full bg-muted" />
+          <div
+            className="absolute left-0 top-4 h-1 rounded-full bg-primary transition-all duration-500"
+            style={{ width: `${(progress / (STEPS.length - 1)) * 100}%` }}
+          />
+          <ol className="relative flex justify-between">
+            {STEPS.map((s, i) => {
+              const done = i < progress || s.key === "delivered" && vm.driverStatus === "delivered";
+              const current = i === progress;
+              return (
+                <li key={s.key} className="flex flex-col items-center gap-1">
+                  {done || (s.key === "delivered" && vm.driverStatus === "delivered") ? (
+                    <CheckCircle2 className="size-8 text-success" strokeWidth={2.5} />
+                  ) : current ? (
+                    <div className="flex size-8 items-center justify-center rounded-full border-2 border-primary bg-primary/10">
+                      <div className="size-3 rounded-full bg-primary" />
+                    </div>
+                  ) : (
+                    <Circle className="size-8 text-muted-foreground/40" strokeWidth={1.5} />
+                  )}
+                  <span
+                    className={`max-w-[70px] truncate text-center text-[10px] font-bold uppercase leading-tight tracking-wide ${
+                      done ? "text-success" : current ? "text-primary" : "text-muted-foreground"
+                    }`}
+                  >
+                    {s.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Store className="size-4" /> {vm.restaurant.name} · {vm.branch.name}
         </p>
@@ -168,8 +223,8 @@ function ActiveDelivery() {
             <p className="text-xs text-muted-foreground">ETA</p>
             <p className="font-bold">{distance ? `${etaMinutes(distance)} min` : "—"}</p>
           </div>
-          <div className="stat-tile">
-            <p className="text-xs text-muted-foreground">You earn</p>
+          <div className="stat-tile ring-1 ring-primary/20">
+            <p className="text-xs text-primary">Payout</p>
             <p className="font-bold text-primary">{formatMoney(vm.deliveryFee + vm.tip)}</p>
           </div>
         </div>
@@ -193,34 +248,52 @@ function ActiveDelivery() {
         </Button>
       </div>
 
-      <section className="surface-card space-y-2 p-4">
-        <h2 className="font-display text-lg font-bold">Customer</h2>
-        <p className="flex items-center gap-2 text-sm">
-          <User className="size-4" /> {vm.customer.name}
+      <section className="surface-card space-y-2 p-4 shadow-elevate">
+        <h2 className="flex items-center gap-2 font-display text-lg font-bold">
+          <User className="size-5 text-primary" /> Customer
+        </h2>
+        <p className="flex items-center gap-2 text-sm font-medium">
+          {vm.customer.name}
         </p>
-        <p className="text-sm text-muted-foreground">
-          {vm.deliveryAddress.street}
-          {vm.deliveryAddress.city ? `, ${vm.deliveryAddress.city}` : ""}
+        <p className="flex items-start gap-2 text-sm text-muted-foreground">
+          <MapPin className="mt-0.5 size-4 shrink-0 text-primary" />
+          <span className="leading-snug">
+            {vm.deliveryAddress.street}
+            {vm.deliveryAddress.city ? `, ${vm.deliveryAddress.city}` : ""}
+          </span>
         </p>
-        {vm.deliveryInstructions && <p className="text-sm text-warning">{vm.deliveryInstructions}</p>}
+        {vm.deliveryInstructions && (
+          <div className="rounded-lg border border-warning/20 bg-warning/5 p-2.5 text-sm font-medium text-warning">
+            {vm.deliveryInstructions}
+          </div>
+        )}
       </section>
 
-      <section className="surface-card space-y-2 p-4">
-        <h2 className="font-display text-lg font-bold">Order</h2>
+      <section className="surface-card space-y-2 p-4 shadow-elevate">
+        <h2 className="flex items-center gap-2 font-display text-lg font-bold">
+          <Package className="size-5 text-primary" /> Order
+        </h2>
         {vm.items.length === 0 && <p className="text-sm text-muted-foreground">No item detail on this order.</p>}
-        {vm.items.map((item, i) => (
-          <div key={item.id ?? i} className="flex justify-between text-sm">
-            <span>
-              {item.quantity ?? 1} × {item.name ?? "Item"}
-            </span>
-            <span>{formatMoney(item.price)}</span>
-          </div>
-        ))}
-        <div className="flex justify-between border-t border-border pt-2 text-sm font-bold">
-          <span>Total ({vm.paymentStatus})</span>
-          <span>{formatMoney(vm.total)}</span>
+        <div className="space-y-1">
+          {vm.items.map((item, i) => (
+            <div key={item.id ?? i} className="flex items-baseline justify-between gap-2 text-sm">
+              <span className="flex items-baseline gap-2">
+                <span className="font-bold text-primary">{item.quantity ?? 1}×</span>
+                <span>{item.name ?? "Item"}</span>
+              </span>
+              <span className="font-medium">{formatMoney(item.price)}</span>
+            </div>
+          ))}
         </div>
-        {vm.specialInstructions && <p className="text-sm text-warning">{vm.specialInstructions}</p>}
+        <div className="mt-2 flex justify-between border-t border-border pt-2 text-base font-bold">
+          <span>Total ({vm.paymentStatus})</span>
+          <span className="text-primary">{formatMoney(vm.total)}</span>
+        </div>
+        {vm.specialInstructions && (
+          <div className="rounded-lg border border-warning/20 bg-warning/5 p-2.5 text-sm font-medium text-warning">
+            {vm.specialInstructions}
+          </div>
+        )}
       </section>
 
       {step?.key === "pickup" && (
